@@ -9,32 +9,55 @@ import math
 import re
 import numpy as np
 
-# Download EIA's U.S. Electric System Operating Data
-def downloadAndExtract(path):
-    url = "https://api.eia.gov/bulk/EBA.zip"
+import os
+import urllib.request
+import zipfile
+
+def downloadAndExtract(
+    url="https://api.eia.gov/bulk/EBA.zip", 
+    destination_dir=None,
+    cluster=False
+):
+    # Determine the destination directory based on the file's location if not provided
+    if destination_dir is None:
+        try:
+            # Try to use __file__ to get the directory of this script
+            destination_dir = os.path.join(os.path.dirname(__file__), "EBA")
+        except NameError:
+            # Fallback to current working directory in interactive environments
+            destination_dir = os.path.join(os.getcwd(), "EBA")
     
-    wget.download(url)
+    # Check if destination directory already exists
+    if os.path.exists(destination_dir):
+        print(f"The directory '{destination_dir}' already exists. Data may have already been downloaded.")
+        return
+
+    # If running on a cluster, print instructions for manual download
+    if cluster:
+        print("If downloading from a cluster, you may need to do so from Terminal. "
+              "Paste the following into a Terminal to manually download and extract:")
+        print(f"""
+        mkdir -p "{destination_dir}" && \
+        wget -O eba_data.zip {url} && \
+        unzip eba_data.zip -d "{destination_dir}" && \
+        rm eba_data.zip
+        """)
+        return
     
-    # extract the data
-    with zipfile.ZipFile("EBA.zip","r") as zip_ref:
-        zip_ref.extractall(path)
+    # Download the file
+    zip_path = "eba_data.zip"
+    urllib.request.urlretrieve(url, zip_path)
+    print("Download complete.")
+    
+    # Extract the file
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(destination_dir)
+    print(f"Data extracted to '{destination_dir}'.")
+
+    # Cleanup: remove the downloaded zip file
+    os.remove(zip_path)
 
 
-# Split json into multiple csv's for manual analysis, view
-#
-def writeCSV(eba_json):
-    numRecords = eba_json.shape[0]
-    recordsPerFile = 100
-    numFiles = math.ceil(numRecords / recordsPerFile)
-
-    for i in range(numFiles):
-        if i == numFiles - 1:
-            r = range(recordsPerFile * i + 1, numRecords)
-        else:
-            r = range(recordsPerFile * i + 1, recordsPerFile * (i + 1))
-        print("Writing csv records in {0}".format(r))
-        df = eba_json.iloc[r, :]
-        df.to_csv("{0}/EBA_sub_{1}.csv".format(EIA_bulk_data_dir,i))
 
 eba_json = None
 ba_list = []
@@ -100,6 +123,17 @@ carbon_intensity = {
     "OTH": 230,
 }
 
+def normalize_to_utc(timestamp):
+    """
+    Normalize a given timestamp to UTC.
+    If the timestamp has no timezone information, it localizes it to UTC.
+    """
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize('UTC')
+    else:
+        return timestamp.tz_convert('UTC')
+
+
 # Construct dataframe from json
 # Target specific balancing authority and day
 def extractBARange(ba_idx, start_day, end_day): 
@@ -107,54 +141,46 @@ def extractBARange(ba_idx, start_day, end_day):
     start_idx = pd.Timestamp('{0}T00Z'.format(start_day), tz='UTC')
     end_idx = pd.Timestamp('{0}T00Z'.format(end_day), tz='UTC')
 
-    idx = pd.date_range(start_day, end_day, freq = "H", tz='UTC')
-
-    # Loop over generating assets and append data to ba_list
-    #
+    idx = pd.date_range(start_day, end_day, freq="H", tz='UTC')
     ba_list = []
 
     for ng_idx in ng_list:
-        # Target json for specific balancing authority. 
-        # Note .H series means timestamps are in GMT / UTC 
-        #
         series_idx = 'EBA.{0}-ALL.NG.{1}.H'.format(ba_idx, ng_idx)
-        this_json = eba_json[eba_json['series_id'] == series_idx]
-        this_json = this_json.reset_index(drop=True)
+        this_json = eba_json[eba_json['series_id'] == series_idx].reset_index(drop=True)
+        
         if this_json.empty:
-            #print('Dataset does not include {0} data'.format(ng_idx))
-            ba_list.append([0]*(idx.shape[0])) # append a list with zeros
+            ba_list.append([0] * idx.shape[0])
             continue
 
-        # Check start/end dates for BA's json include target day
-        #
-        start_dat = pd.Timestamp(this_json['start'].reset_index(drop=True)[0])
-        end_dat = pd.Timestamp(this_json['end'].reset_index(drop=True)[0])
-        if (start_idx < start_dat):
+        # Normalize start and end dates to UTC
+        start_dat = normalize_to_utc(pd.Timestamp(this_json['start'].iloc[0]))
+        end_dat = normalize_to_utc(pd.Timestamp(this_json['end'].iloc[0]))
+
+        # Check if start_idx is less than start_dat and end_idx is greater than end_dat
+        if start_idx < start_dat:
             print('Indexed start ({0}) precedes {1} dataset range ({2})'.format(start_idx, ng_idx, start_dat))
-            #continue
-
-        if (end_idx > end_dat):
+        if end_idx > end_dat:
             print('Indexed end ({0}) beyond {1} dataset range ({2})'.format(end_idx, ng_idx, end_dat))
-            #continue
 
-        # Extract data tuples for target day
-        # this_json['data'][0] is a list of items x = [date, MWh] tuples 
-        #
         tuple_list = this_json['data'][0]
-        tuple_filtered = list(filter(\
-            lambda x: (pd.Timestamp(x[0]) >= start_idx) & (pd.Timestamp(x[0]) <= end_idx), \
-            tuple_list))
-        df = pd.DataFrame(tuple_filtered, columns =['timestamp', 'power'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values(by=['timestamp'], ascending=(True))
-        df.set_index(pd.DatetimeIndex(df['timestamp']), inplace=True)
-        df.drop(columns=['timestamp'], inplace=True)
-        df = df.reindex(index=idx, fill_value=0).reset_index()
+
+        tuple_filtered = list(filter(
+            lambda x: (
+                (normalize_to_utc(pd.Timestamp(x[0])) >= start_idx) and 
+                (normalize_to_utc(pd.Timestamp(x[0])) <= end_idx)
+            ), 
+            tuple_list
+        ))
+
+        df = pd.DataFrame(tuple_filtered, columns=['timestamp', 'power'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+        df = df.sort_values(by=['timestamp'], ascending=True).set_index('timestamp').reindex(index=idx, fill_value=0).reset_index()
         ba_list.append(df['power'].tolist())
 
     dfa = pd.DataFrame(np.array(ba_list).transpose(), columns=ng_list)
     dfa = dfa.set_index(idx)
     return dfa
+
 
 # Calculate carbon intensity of the grid (kg CO2/MWh)
 # Takes a dataframe of energy generation as input (i.e. output of extractBARange)
@@ -171,4 +197,3 @@ def calculateAVGCarbonIntensity(db):
     tot_carbon = tot_carbon.div(sum_db).to_frame()
     tot_carbon.rename(columns={tot_carbon.columns[0]: "carbon_intensity"}, inplace=True)
     return tot_carbon
-
