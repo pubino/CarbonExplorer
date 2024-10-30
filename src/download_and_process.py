@@ -25,7 +25,7 @@ def downloadAndExtract(
             destination_dir = os.path.join(os.path.dirname(__file__), "EBA")
         except NameError:
             # Fallback to current working directory in interactive environments
-            destination_dir = os.path.join(os.getcwd(), "EBA")
+            destination_dir = os.path.join(os.getcwd(), "../EBA")
     
     # Check if destination directory already exists
     if os.path.exists(destination_dir):
