@@ -83,8 +83,6 @@ dependencies:
   - libdeflate=1.22
   - libedit=3.1.20191231
   - libffi=3.4.2
-  - libgfortran=5.0.0
-  - libgfortran5=13.2.0
   - libjpeg-turbo=3.0.0
   - liblapack=3.9.0
   - libopenblas=0.3.28
@@ -133,8 +131,6 @@ dependencies:
   - pure_eval=0.2.3
   - pycparser=2.22
   - pygments=2.18.0
-  - pyobjc-core=10.3.1
-  - pyobjc-framework-cocoa=10.3.1
   - pyparsing=3.2.0
   - pysocks=1.7.1
   - python=3.9.20
