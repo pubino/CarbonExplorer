@@ -186,6 +186,8 @@ def extractBARange(ba_idx, start_day, end_day):
 # Takes a dataframe of energy generation as input (i.e. output of extractBARange)
 # Returns a time series of carbon intensity dataframe
 def calculateAVGCarbonIntensity(db):
+    db = db.apply(pd.to_numeric, errors='coerce') # Convert non-numeric to NaN
+    db.fillna(0, inplace=True)  # Replace NaN with 0
     tot_carbon = None
     db[db < 0] = 0
     sum_db = db.sum(axis=1)
